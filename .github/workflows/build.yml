@@ -26,6 +26,8 @@ on:
         - arm
         - x86
         - x64
+  push:
+    branches: [ main, master ]
 
 env:
   ANDROID_API_LEVEL: '33'
