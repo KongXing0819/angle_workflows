@@ -26,10 +26,6 @@ on:
         - arm
         - x86
         - x64
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
 
 env:
   ANDROID_API_LEVEL: '33'
@@ -42,8 +38,12 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      
+    - name: Setup JDK 17
+      uses: actions/setup-java@v4
       with:
-        submodules: recursive
+        java-version: '17'
+        distribution: 'temurin'
         
     - name: Checkout ANGLE
       run: |
@@ -66,7 +66,6 @@ jobs:
           git \
           cmake \
           ninja-build \
-          openjdk-17-jdk \
           pkg-config \
           libx11-dev \
           libxcomposite-dev \
@@ -74,16 +73,44 @@ jobs:
           libxcursor-dev \
           libxi-dev \
           libnss3-dev \
-          libatk-bridge2.0-dev
-        
-    - name: Setup Android SDK and NDK
-      uses: android-actions/setup-android@v3
-      
-    - name: Install specific NDK version
+          libatk-bridge2.0-dev \
+          unzip
+          
+    - name: Download and setup Android Command Line Tools
       run: |
-        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;$ANDROID_NDK_VERSION"
+        mkdir -p android-sdk
+        cd android-sdk
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+        unzip -q commandlinetools-linux-11076708_latest.zip
+        mkdir -p cmdline-tools/latest
+        mv cmdline-tools/* cmdline-tools/latest/
+        rm commandlinetools-linux-11076708_latest.zip
+        
+        # 设置环境变量
+        echo "ANDROID_HOME=$PWD" >> $GITHUB_ENV
+        echo "ANDROID_SDK_ROOT=$PWD" >> $GITHUB_ENV
+        echo "$PWD/cmdline-tools/latest/bin" >> $GITHUB_PATH
+        
+    - name: Accept Android licenses
+      run: |
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        
+    - name: Install Android SDK and NDK
+      run: |
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+          "platform-tools" \
+          "platforms;android-${{ github.event.inputs.android_api || '33' }}" \
+          "build-tools;34.0.0" \
+          "ndk;$ANDROID_NDK_VERSION"
+          
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
         echo "ANDROID_NDK=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> $GITHUB_ENV
+        
+    - name: Verify Android installation
+      run: |
+        echo "Android SDK path: $ANDROID_HOME"
+        echo "Android NDK path: $ANDROID_NDK"
+        ls -la $ANDROID_HOME/ndk/
         
     - name: Bootstrap ANGLE
       run: |
@@ -129,13 +156,15 @@ jobs:
       run: |
         cd angle/out/Android-${{ env.TARGET_ARCH }}-${{ env.ANGLE_BUILD_TYPE }}
         find . -name "*.so" -o -name "*.a" | head -20
+        echo "=== libGLESv2.so location ==="
+        find . -name "libGLESv2.so" -type f
         
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
         name: angle-android-${{ env.TARGET_ARCH }}-${{ env.ANGLE_BUILD_TYPE }}
         path: |
-          angle/out/Android-${{ env.TARGET_ARCH }}-${{ env.ANGLE_BUILD_TYPE }}/obj/third_party/angle/libGLESv2.so
+          angle/out/Android-${{ env.TARGET_ARCH }}-${{ env.ANGLE_BUILD_TYPE }}/**/*.so
           angle/out/Android-${{ env.TARGET_ARCH }}-${{ env.ANGLE_BUILD_TYPE }}/libGLESv2.so
         retention-days: 30
         
@@ -147,18 +176,24 @@ jobs:
         echo "- **Target Architecture**: ${{ env.TARGET_ARCH }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Android API Level**: ${{ env.ANDROID_API }}" >> $GITHUB_STEP_SUMMARY
         echo "- **NDK Version**: ${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **JDK Version**: 17" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "Build completed successfully! 🎉" >> $GITHUB_STEP_SUMMARY
 
   multi-arch-build:
-    needs: build-android
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        arch: [arm64, arm, x86, x64]
+        arch: [arm64, arm]
     
     steps:
+    - name: Setup JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        
     - name: Checkout ANGLE
       run: |
         git clone https://chromium.googlesource.com/angle/angle
@@ -171,12 +206,29 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build openjdk-17-jdk
+        sudo apt-get install -y cmake ninja-build unzip wget
         
-    - name: Setup Android
-      uses: android-actions/setup-android@v3
-      
-    - name: Bootstrap and sync
+    - name: Download and setup Android SDK
+      run: |
+        mkdir -p android-sdk
+        cd android-sdk
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+        unzip -q commandlinetools-linux-11076708_latest.zip
+        mkdir -p cmdline-tools/latest
+        mv cmdline-tools/* cmdline-tools/latest/
+        rm commandlinetools-linux-11076708_latest.zip
+        
+        echo "ANDROID_HOME=$PWD" >> $GITHUB_ENV
+        echo "ANDROID_SDK_ROOT=$PWD" >> $GITHUB_ENV
+        echo "$PWD/cmdline-tools/latest/bin" >> $GITHUB_PATH
+        
+    - name: Accept licenses and install NDK
+      run: |
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.1.8937393"
+        echo "ANDROID_NDK=$ANDROID_HOME/ndk/25.1.8937393" >> $GITHUB_ENV
+        
+    - name: Bootstrap and sync ANGLE
       run: |
         cd angle
         python scripts/bootstrap.py
@@ -200,5 +252,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: angle-android-${{ matrix.arch }}
-        path: angle/out/Android-${{ matrix.arch }}/*.so
+        path: angle/out/Android-${{ matrix.arch }}/**/*.so
         retention-days: 30
